@@ -4,7 +4,7 @@
 
 | Name | Matrikelnummer |
 | ------ | ----------- |
-| Xin Pang   | path to data files to supply the data that will be passed into templates. |
+| Xin Pang   | 3111543 |
 | Ning Ding | engine to be used for processing templates. Handlebars is the default. |
 | Yang Fu    | extension to be used for dest files. |
 
