@@ -12,6 +12,12 @@ def broadcast(ip, port, broadcast_message):
     broadcast_socket.close()
 
 
+def getBroadcastIP(MY_IP):
+    ip = MY_IP.split('.')
+    BROADCAST_IP = ip[0] + '.' + ip[1] + '.' + ip[2] + '.255'
+    return BROADCAST_IP
+    
+
 if __name__ == '__main__':
 
     # Local host information
@@ -19,8 +25,8 @@ if __name__ == '__main__':
     MY_IP = socket.gethostbyname(MY_HOST)
 
     # Broadcast address and port
-    BROADCAST_IP = MY_IP[:]
-    BROADCAST_IP = BROADCAST_IP[:-2] + '255'
+    BROADCAST_IP = getBroadcastIP(MY_IP)
+    
     print('ip:{}, broadcast address:{}'.format(MY_IP, BROADCAST_IP))
     BROADCAST_PORT = 64922
 
