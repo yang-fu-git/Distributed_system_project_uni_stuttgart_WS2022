@@ -52,12 +52,6 @@ if __name__ == '__main__':
     sendHeartbeatMsg = Thread(target=sendHeartbeat, args = (BROADCAST_IP, server_port, server_address))
     sendHeartbeatMsg.start()
 
-"""    # Broadcast address and port
-    BROADCAST_IP = MY_HOST[:]
-    BROADCAST_IP = BROADCAST_IP[:-2] + '255'
-    print('ip:{}, broadcast address:{}'.format(MY_HOST, BROADCAST_IP))
-    BROADCAST_PORT = 64922"""
-
     
 """    message = MY_HOST + ' sent a broadcast'
     broadcast(BROADCAST_IP, BROADCAST_PORT, message)"""
