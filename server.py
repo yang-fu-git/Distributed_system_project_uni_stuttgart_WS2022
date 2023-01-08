@@ -1,49 +1,140 @@
+import multiprocessing
 import socket
+import sys
+import enum
+import logging
+import random
+import time
+import time, threading
+from queue import Queue
+from datetime import datetime
+
+# Redirect logging to stdout.
+root = logging.getLogger()
+root.setLevel(logging.DEBUG)
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+root.addHandler(handler)
+
+# 3 servers come online at the same time and start voting process asap
+def broadcast(ip, port,broadcast_message,broadcast_socket):
+    # Create a UDP socket
+    # Send message on broadcast address
+    broadcast_socket.sendto(str.encode(broadcast_message), (ip, port))
+    broadcast_socket.close()
+
+# Returns random election timeout between 150ms and 300ms.
+def ELECTION_TIMEOUT():
+    return random.uniform(150,300)
+
+def HEARTBEAT_TIMEOUT():
+    return random.uniform(150,300)
 
 
-class Server(object):
-    # Define the host and port to listen on
-    HOST = "localhost"
+BUFFER_SIZE = 1024
+BROADCAST_IP = "192.168.178.255"
+BROADCAST_PORT = 10001
+BROADCAST_MESSAGE = 'I\'m a new participant.'
 
-    PORT = 8000
+class SERVER_STATE(enum.Enum):
+    FOLLOWER = 1
+    CANDIDATE = 2
+    LEADER = 3
+
+class Server:
+    def __init__(self):
+        super(Server, self).__init__()
+        # In which state the current server is in. Default as `FOLLOWER` 
+        self.state = SERVER_STATE.FOLLOWER
+        # String ecoded by `ip_address`_`port`.
+        self.server_address = ''
+        # List of all distinct online servers. Key of online server is server_address.
+        self.group_view = set()
+        self.listen_socket = None
+        self.broadcast_socket = None
+        self.initialize()
+        logging.info("Server address: %s, Online servers: %s, Server state: %s", 
+                    self.server_address,
+                    self.group_view,
+                    self.state)
+        
+
+    def initialize(self):
+        self.listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # This will then return immediately if there is no data available.
+        # self.listen_socket.setblocking(0)
+        # Trick: '' in fact bind to real server local ip.
+        self.listen_socket.bind(('', BROADCAST_PORT))
+        self.broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        
+        
+        # Start listening on broadcasted messages.
+        
+    def start(self):
+        threading.Thread(target=self.listen, args=(),name='ListenToBroadcastThread').start()
+        time.sleep(1)
+        self.broadcastPort()
+
+        
+    
+    # def sendVoteRequest(onlineServers,broadcast_socket):
+    #     message = 'plz vote me'
+    #     for port in onlineServers:
+    #         broadcast_socket.sendto(str.encode(message), (local_IP, port))    
+
+    # def sendHeartbeat():
+    #     message_state = 'serverstate is'
+    #     while True: 
+    #         broadcast(BROADCAST_IP, BROADCAST_PORT, message_state)
+    #         sendHeartBeatTime = sendHeartBeatTime.Queue()
+    #         sendHeartBeatTime.put(datetime.now().strftime("%H:%M:%S"))
+    #         time.sleep(1)
+
+    # def listenForheartAckknowledge(listen_socket):
+    #     activeServer=[]
+    #     while datetime.now().strftime("%H:%M:%S")-sendHeartBeatTime.get().total_seconds()*1000<1:
+    #         data, addr = listen_socket.recvfrom(1024) #non blocking
+    #         if data:
+    #             if data == 'I\'m the new follower':
+    #                 print(f"follower: %s" % (addr,))
+    #                 activeServer.append(addr[1])
+    #             elif data == 'plz vote me':
+    #                 broadcast_socket.sendto(str.encode(message), (local_IP, (addr,)[1]))
+    #     onlineServers = activeServer
+        
+    def broadcastPort(self):
+        broadcast_message = 'I\'m a new participant.'
+        broadcast(BROADCAST_IP, BROADCAST_PORT,broadcast_message,self.broadcast_socket)  
+
+    def listen(self):
+        while True:
+            data, addr = self.listen_socket.recvfrom(1024)
+            print(data)
+            if data:
+                server_addr = "{0}_{1}".format(addr[0],addr[1])
+                self.group_view.add(server_addr)
+                logging.info("Add server paticipent: %s", server_addr)
+                logging.info("Current group view: %s", self.group_view)
 
 
-# Create a socket to listen for incoming messages
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind((HOST, PORT))
-    server_socket.listen()
+if __name__ == "__main__":
+    # s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # s.connect(("8.8.8.8", 80))
+    # local_IP = s.getsockname()[0]
+    # print('server_IP'+ local_IP)
+ 
+    server = Server()
+    server.start()
 
-# Create a dictionary to store the sockets of each connected node
-    node_sockets = {}
+    
 
-# Define the function to send a message to a specific node
 
-    def send_message(node, message):
-        # Get the socket for the node
-        s = node_sockets[node]
 
-    # Serialize the message and send it over the socket
-        s.sendall(serialize(message))
 
-# Define the function to receive a message from any node
 
-    def receive_message():
-        # Accept a new connection from a node
-        client_socket, address = server_socket.accept()
-
-    # Add the socket to the dictionary of node sockets
-        node_sockets[address] = client_socket
-
-    # Receive and deserialize the message from the socket
-        message = client_socket.recv(1024)
-        return deserialize(message)
-
-# Define functions to serialize and deserialize messages
-
-    def serialize(message):
-        # Replace this with your own serialization logic
-        return message
-
-    def deserialize(message):
-        # Replace this with your own deserialization logic
-        return message
