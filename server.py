@@ -34,6 +34,8 @@ BROADCAST_MESSAGE = 'I\'m a new participant.'
 REQUEST_VOTE_MESSAGE_PREFIX = 'Please vote me:'
 RESPONSE_VOTE_MESSAGE_PREFIX = 'Vote response:'
 HEARTBEAT_MESSAGE = 'I\'m the leader at term:'
+HEARTBEAT_ACK_MESSAGE = 'I \'m still online'
+
 
 class SERVER_STATE(enum.Enum):
     FOLLOWER = 1
@@ -52,6 +54,7 @@ class Server:
         self.server_ip = ''
         # List of all distinct online servers. Key of online server is server_address.
         self.group_view = set()
+        self.group_view_temp = set()
         self.listen_socket = None
         self.send_socket = None
         self.initialize()
@@ -113,9 +116,15 @@ class Server:
 
     
     def scheduleHeartbeatTimeout(self):
+        if self.group_view_temp is not None:
+            self.group_view = self.group_view_temp
+            logging.debug(self.group_view)
+            self.group_view.add(self.server_address)
+            self.group_view_temp.clear()
         self.sendHeartbeat()
         self.heartbeat_timer = threading.Timer(HEARTBEAT_TIMEOUT(), self.scheduleHeartbeatTimeout)
         self.heartbeat_timer.start()
+
 
     def requestVote(self):
         self.term +=1
@@ -170,12 +179,12 @@ class Server:
             data, addr = self.listen_socket.recvfrom(1024)
             if data.decode("utf-8").startswith(BROADCAST_MESSAGE):
                 # During voting, ignore newly online server.
-                if addr not in self.group_view and self.state != SERVER_STATE.CANDIDATE:
+                if addr not in self.group_view:
                     self.group_view.add(addr)
                     logging.info("Add server paticipent: %s", addr)
                     logging.info("Current group view: %s", self.group_view)
-            # while recieving heartbeat    
             
+  
     
     def listenAtSenderPort(self):
         logging.info('listen at sender port start')
@@ -193,7 +202,7 @@ class Server:
                         self.election_timer.cancel()
                     self.scheduleElectionTimeout()
                 else:
-                    self.send_socket.sendto(str.encode(RESPONSE_VOTE_MESSAGE_PREFIX + "False"), addr) #?? necessary??
+                    self.send_socket.sendto(str.encode(RESPONSE_VOTE_MESSAGE_PREFIX + "False"), addr) 
             elif data.decode("utf-8").startswith(RESPONSE_VOTE_MESSAGE_PREFIX) and self.state == SERVER_STATE.CANDIDATE:
                 vote_response = data.decode("utf-8").split(":")[1]
                 logging.debug("Get vote response: %s", vote_response)
@@ -213,7 +222,12 @@ class Server:
                 self.state = SERVER_STATE.FOLLOWER
                 logging.info('Server at %s is a follower',self.server_address)
                 self.vote_granted = False
-            
+                # send heartbeat Ack
+                self.send_socket.sendto(str.encode(HEARTBEAT_ACK_MESSAGE),addr) 
+            # deal with heartbeat_Ack
+            elif data.decode("utf-8").startswith(HEARTBEAT_ACK_MESSAGE) and self.state == SERVER_STATE.Leader:
+                self.group_view_temp.add(addr) 
+
 
 if __name__ == "__main__":
     server = Server()
