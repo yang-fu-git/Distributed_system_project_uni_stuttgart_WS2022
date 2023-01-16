@@ -9,8 +9,6 @@ import time, threading
 from queue import Queue
 from datetime import datetime
 import ast
-from threading import Lock
-
 
 # 3 servers come online at the same time and start voting process asap
 def broadcast(ip, port,broadcast_message,broadcast_socket):
@@ -22,8 +20,7 @@ def broadcast(ip, port,broadcast_message,broadcast_socket):
 # amount of time a follower waits until becoming a candidate.
 # Returns random election timeout between 150ms and 300ms, in unit of seconds.
 def ELECTION_TIMEOUT():
-    # return random.uniform(150,300) * 1e-2
-    return 300*1e-2
+    return random.uniform(150,300) * 1e-2
 # send heartbeat message on heartbeat timeout.
 def HEARTBEAT_TIMEOUT():
     return 100* 1e-2
@@ -37,7 +34,7 @@ BROADCAST_MESSAGE = 'I\'m a new participant.'
 REQUEST_VOTE_MESSAGE_PREFIX = 'Please vote me:'
 RESPONSE_VOTE_MESSAGE_PREFIX = 'Vote response:'
 HEARTBEAT_MESSAGE = 'I\'m the leader at term:'
-HEARTBEAT_ACK_MESSAGE = 'I\'m still online'
+HEARTBEAT_ACK_MESSAGE = 'I \'m still online'
 
 
 class SERVER_STATE(enum.Enum):
@@ -48,7 +45,6 @@ class SERVER_STATE(enum.Enum):
 class Server:
     def __init__(self):
         super(Server, self).__init__()
-        self.mutex = Lock()
         # Redirect logging to stdout.
         self.logger = None
         # In which state the current server is in. Default as `FOLLOWER` 
@@ -122,6 +118,7 @@ class Server:
     def scheduleHeartbeatTimeout(self):
         if len(self.group_view_temp) != 0:
             self.group_view = self.group_view_temp
+            logging.debug(self.group_view)
             self.group_view.add(self.server_address)
             self.group_view_temp.clear()
         self.sendHeartbeat()
@@ -131,13 +128,12 @@ class Server:
 
     def requestVote(self):
         self.term +=1
-        logging.debug("Request vote %s for term %s.", self.server_address, self.term)
         self.num_votes +=1
         self.vote_granted = True
         self.state = SERVER_STATE.CANDIDATE
         # No need to send if the server is the single participent in the group.
-        # if not self.leaderElected():
-        self.sendMessageToGroup(REQUEST_VOTE_MESSAGE_PREFIX + str(self.term))
+        if not self.leaderElected():
+            self.sendMessageToGroup(REQUEST_VOTE_MESSAGE_PREFIX + str(self.term))
     
     # Send message to all servers in group_view.
     def sendMessageToGroup(self, message):
@@ -182,7 +178,6 @@ class Server:
     def listen(self):
         while True:
             data, addr = self.listen_socket.recvfrom(1024)
-            # with self.mutex:
             if data.decode("utf-8").startswith(BROADCAST_MESSAGE):
                 # During voting, ignore newly online server.
                 if addr not in self.group_view:
@@ -193,10 +188,10 @@ class Server:
   
     
     def listenAtSenderPort(self):
+        logging.info('listen at sender port start')
         while True:
             data, addr = self.send_socket.recvfrom(1024)
-            # with self.mutex:
-            # GET election related message
+             # GET election related message
             if data.decode("utf-8").startswith(REQUEST_VOTE_MESSAGE_PREFIX):
                 foreign_term = int(data.decode("utf-8").split(":")[1])
                 if not self.vote_granted and foreign_term >= self.term:
@@ -206,40 +201,30 @@ class Server:
                     # resets its election timeout.
                     if self.election_timer is not None:
                         self.election_timer.cancel()
-                        logging.debug("On receiving request vote. %s state is alive %s", self.server_address, self.election_timer.is_alive())
-
-                    if self.election_timer.finished:
-                        self.scheduleElectionTimeout()
-                        logging.debug("OnReceiving Request Vote Timer is rescheduled. %s", self.server_address)
+                    self.scheduleElectionTimeout()
+                else:
+                    self.send_socket.sendto(str.encode(RESPONSE_VOTE_MESSAGE_PREFIX + "False"), addr) 
             elif data.decode("utf-8").startswith(RESPONSE_VOTE_MESSAGE_PREFIX) and self.state == SERVER_STATE.CANDIDATE:
-                foreign_term = int(data.decode("utf-8").split(":")[1])
-                logging.debug("Get vote response: %s", foreign_term)
-                if foreign_term == self.term:
+                vote_response = data.decode("utf-8").split(":")[1]
+                logging.debug("Get vote response: %s", vote_response)
+                if vote_response == "True":
                     self.num_votes +=1
                     self.leaderElected()  
             elif data.decode("utf-8").startswith(HEARTBEAT_MESSAGE):
                 if addr == self.server_address: 
                     return
                 # update log replication
-                logging.info('heartbeat recieve from:%s,self addr: %s', addr,self.server_address)
-                
                 self.term = int(data.decode("utf-8").split(':')[1])
-                # logging.error(data.decode("utf-8").split(':')[3])
+                logging.error(data.decode("utf-8").split(':')[3])
                 self.group_view = ast.literal_eval(data.decode("utf-8").split(':')[3])
-                
                 if self.election_timer is not None:
                     self.election_timer.cancel()
-                    logging.debug("On receiving heartbeat Timer. %s state is alive %s", self.server_address, self.election_timer.is_alive())
-                
+                self.scheduleElectionTimeout()
                 self.state = SERVER_STATE.FOLLOWER
-                logging.info('Server at %s is a follower at term %s',self.server_address,self.term)
+                logging.info('Server at %s is a follower',self.server_address)
                 self.vote_granted = False
                 # send heartbeat Ack
-                self.send_socket.sendto(str.encode(HEARTBEAT_ACK_MESSAGE),addr)
-                self.scheduleElectionTimeout()
-                if self.election_timer.finished:
-                    self.scheduleElectionTimeout()
-                    logging.debug("On receiving Heartbeat: Timer is rescheduled. %s", self.server_address)
+                self.send_socket.sendto(str.encode(HEARTBEAT_ACK_MESSAGE),addr) 
             # deal with heartbeat_Ack
             elif data.decode("utf-8").startswith(HEARTBEAT_ACK_MESSAGE) and self.state == SERVER_STATE.LEADER:
                 self.group_view_temp.add(addr) 
