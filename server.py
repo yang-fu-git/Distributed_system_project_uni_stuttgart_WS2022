@@ -70,7 +70,7 @@ class Server:
                     self.group_view,
                     self.state)
         # If the current candidate has voted in current term.
-        self.vote_granted = False
+        self.voted_for = None
         # Received number of votes, including self-voted one.
         self.num_votes = 0
         # Candidate’s term, default as 0, will be updated to current term via recheiving heartbeat.
@@ -143,17 +143,20 @@ class Server:
 
 
     def requestVote(self):
-        # If leader is unhealthy, we should at least remove leader as part of participent.
+        # If leader is unhealthy, we should at least remove leader from group view.
         if self.current_leader_addr != self.server_address and self.current_leader_addr in self.group_view:
             self.group_view.remove(self.current_leader_addr)
+        self.num_votes = 0
         self.term +=1
         logging.info("RequestVote at %s at term %s", self.server_address, self.term)
         self.num_votes +=1
-        self.vote_granted = True
+        self.voted_for = self.server_address
         self.state = SERVER_STATE.CANDIDATE
         # No need to send if the server is the single participent in the group.
         if not self.leaderElected():
             self.sendMessageToGroup(REQUEST_VOTE_MESSAGE_PREFIX + str(self.term))
+            # Schedule election time out to redolve split voting results.
+            self.scheduleElectionTimeout()
     
     # Send message to all servers in group_view.
     def sendMessageToGroup(self, message):
@@ -190,7 +193,7 @@ class Server:
                 self.election_timer.cancel()
             self.scheduleHeartbeatTimeout()
             logging.info('Leader elected at %s for term %s',self.server_address,self.term)
-            self.vote_granted = False
+            self.has_voted = None
             return True
         else:
             return False
@@ -216,9 +219,10 @@ class Server:
              # GET election related message
             if data.decode("utf-8").startswith(REQUEST_VOTE_MESSAGE_PREFIX):
                 foreign_term = int(data.decode("utf-8").split(":")[1])
-                if not self.vote_granted and foreign_term >= self.term:
+                if foreign_term >= self.term and (self.voted_for is None or self.voted_for == addr):
+                    self.term = foreign_term
                     self.send_socket.sendto(str.encode(RESPONSE_VOTE_MESSAGE_PREFIX + "{}".format(foreign_term)), addr)
-                    self.vote_granted = True
+                    self.voted_for = addr
                     # resets its election timeout.
                     self.scheduleElectionTimeout()
             elif data.decode("utf-8").startswith(RESPONSE_VOTE_MESSAGE_PREFIX) and self.state == SERVER_STATE.CANDIDATE:
@@ -241,7 +245,7 @@ class Server:
                 self.state = SERVER_STATE.FOLLOWER
                 self.current_leader_addr = addr
                 logging.info('Server at %s is a follower',self.server_address)
-                self.vote_granted = False
+                self.has_voted = False
                 # Reset election timer.
                 self.scheduleElectionTimeout()
                 # send heartbeat Ack
