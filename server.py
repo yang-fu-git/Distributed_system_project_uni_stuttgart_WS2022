@@ -1,4 +1,3 @@
-import multiprocessing
 import socket
 import sys
 import enum
@@ -8,6 +7,7 @@ import time
 import time, threading
 from queue import Queue
 from datetime import datetime
+import json
 import ast
 import collections
 from threading import Lock
@@ -37,6 +37,8 @@ REQUEST_VOTE_MESSAGE_PREFIX = 'Please vote me:'
 RESPONSE_VOTE_MESSAGE_PREFIX = 'Vote response:'
 HEARTBEAT_MESSAGE = 'I\'m the leader at term:'
 HEARTBEAT_ACK_MESSAGE = 'I\'m still online'
+CLIENT_REQUEST = "Client request:"
+CLIENT_RESPONSE = "Client response:"
 UNACK_THREASHOLD  = 5
 
 class SERVER_STATE(enum.Enum):
@@ -77,6 +79,28 @@ class Server:
         self.term = 0
         # Store the address for the current leader.
         self.current_leader_addr = None
+
+        # Log entries; each entry contains command for state machine, and term when entry was received by leader
+        # (first index is 1).
+        # LogEntry: (LogTerm, LogContent)
+        self.log = [(0,None)]
+        # Volatile state on all servers.
+        # index of highest log entry known to be committed (initialized to 0, increases monotonically)
+        self.commit_index = 0
+        # index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+        self.last_applied = 0
+
+        # Volatile state on leaders:
+
+        # for each server, index of the next log entry
+        # to send to that server (initialized to leader
+        # last log index + 1)
+        self.next_index = {}
+
+        # for each server, index of highest log entry
+        # known to be replicated on server
+        # (initialized to 0, increases monotonically)
+        self.match_index = {}
         
 
     def initialize(self):
@@ -114,8 +138,6 @@ class Server:
         self.broadcastPort(BROADCAST_MESSAGE)
         self.server_address = (self.server_ip,self.send_socket.getsockname()[1])
         self.scheduleElectionTimeout()
-
-            
     
     def scheduleElectionTimeout(self):
         if self.election_timer is not None:
@@ -135,9 +157,11 @@ class Server:
             self.group_view_unhealthy[unacked] += 1
             if self.group_view_unhealthy[unacked] == UNACK_THREASHOLD:
                 self.group_view.remove(unacked)
+                self.next_index.pop(unacked, None)
+                self.match_index.pop(unacked, None)
         self.group_view_ack.clear()
         logging.debug("Updated group view before heartbeat: %s", self.group_view)
-        self.sendHeartbeat()
+        self.appendEntries()
         self.heartbeat_timer = threading.Timer(HEARTBEAT_TIMEOUT(), self.scheduleHeartbeatTimeout)
         self.heartbeat_timer.start()
 
@@ -146,31 +170,62 @@ class Server:
         # If leader is unhealthy, we should at least remove leader from group view.
         if self.current_leader_addr != self.server_address and self.current_leader_addr in self.group_view:
             self.group_view.remove(self.current_leader_addr)
+            self.next_index.pop(self.current_leader_addr, None)
+            self.match_index.pop(self.current_leader_addr, None)
         self.num_votes = 0
+        # Increment current term.
         self.term +=1
-        logging.info("RequestVote at %s at term %s", self.server_address, self.term)
+        logging.info("RequestVote at %s at term %s with group %s", self.server_address, self.term, self.group_view)
+        # Vote for self.
         self.num_votes +=1
         self.voted_for = self.server_address
         self.state = SERVER_STATE.CANDIDATE
         # No need to send if the server is the single participent in the group.
         if not self.leaderElected():
-            self.sendMessageToGroup(REQUEST_VOTE_MESSAGE_PREFIX + str(self.term))
-            # Schedule election time out to redolve split voting results.
+            # Reset election timer.
             self.scheduleElectionTimeout()
-    
-    # Send message to all servers in group_view.
-    def sendMessageToGroup(self, message):
-        for addr in self.group_view:
-            if addr == self.server_address:
-                continue
-            self.send_socket.sendto(str.encode(message),addr)    
+            # Send RequestVote RPCs to all other servers.
+            for addr in self.group_view:
+                if addr == self.server_address:
+                    continue
+                self.send_socket.sendto(str.encode(REQUEST_VOTE_MESSAGE_PREFIX + str(self.term)),addr)
+            
 
     # 1. Tell others I'm leader at .. term with groupview
     # 2. Send log replication to others
-    
-    def sendHeartbeat(self):
-        heartbeat_message = HEARTBEAT_MESSAGE+'{}'.format(self.term) +':with group view:{}'.format(repr(self.group_view))
-        self.sendMessageToGroup(heartbeat_message)
+    def appendEntries(self):
+        logging.info("Leader log entries: %s", self.log)
+        # with self.mutex:
+        # If there exists an N such that N > commitIndex, a majority
+        # of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+        # set commitIndex = N
+        while self.commit_index + 1 < len(self.log):
+            # Including leader itself -> +1
+            num_matched = 1+sum(1 for (_,match_idx) in self.match_index.items() if match_idx > self.commit_index)
+            if num_matched > len(self.match_index)/2 and self.log[self.commit_index+1][0] == self.term:
+                self.commit_index += 1
+            else:
+                break
+        if self.last_applied < self.commit_index:
+            self.last_applied = self.commit_index
+        
+        for addr in self.group_view:
+            if addr == self.server_address:
+                continue
+            append_entries_payload = {
+                'term':self.term,
+                'leaderId':self.server_address,
+                'prevLogIndex':self.next_index[addr]-1,
+                'prevLogTerm':self.log[self.next_index[addr]-1][0],
+                'entries':[],
+                'leaderCommit':self.commit_index,
+                'group_view':repr(self.group_view)
+            }
+            if self.next_index[addr] < len(self.log):
+                append_entries_payload['entries'] = self.log[self.next_index[addr]:]
+            message = HEARTBEAT_MESSAGE+'{}'.format(json.dumps(append_entries_payload))
+            self.send_socket.sendto(str.encode(message),addr)
+        
 
     # def listenForheartAckknowledge(listen_socket):
     #     activeServer=[]
@@ -191,9 +246,16 @@ class Server:
             self.group_view_ack = self.group_view.copy()
             if self.election_timer is not None:
                 self.election_timer.cancel()
-            self.scheduleHeartbeatTimeout()
             logging.info('Leader elected at %s for term %s',self.server_address,self.term)
             self.has_voted = None
+            # When a leader first comes to power,
+            # it initializes all nextIndex values to the index just after the
+            # last one in its log
+            next_index = len(self.log)
+            for addr in self.group_view:
+                self.next_index[addr] = next_index
+                self.match_index[addr] = 0
+            self.scheduleHeartbeatTimeout()
             return True
         else:
             return False
@@ -208,8 +270,13 @@ class Server:
                 # During voting, ignore newly online server.
                 if addr not in self.group_view:
                     self.group_view.add(addr)
+                    self.next_index[addr] = len(self.log)
+                    self.match_index[addr] = 0
                     logging.info("Add server paticipent: %s", addr)
                     logging.info("Current group view: %s", self.group_view)
+            if data.decode("utf-8").startswith(CLIENT_REQUEST):
+                if self.state == SERVER_STATE.LEADER:
+                    self.log.append([self.term,data.decode("utf-8").split(":")[1]])
   
     
     def listenAtSenderPort(self):
@@ -219,12 +286,15 @@ class Server:
              # GET election related message
             if data.decode("utf-8").startswith(REQUEST_VOTE_MESSAGE_PREFIX):
                 foreign_term = int(data.decode("utf-8").split(":")[1])
-                if foreign_term >= self.term and (self.voted_for is None or self.voted_for == addr):
+                # TODO Vote response based on log entry status.
+                if foreign_term > self.term or (foreign_term == self.term 
+                and (self.voted_for is None or self.voted_for == addr)):
                     self.term = foreign_term
                     self.send_socket.sendto(str.encode(RESPONSE_VOTE_MESSAGE_PREFIX + "{}".format(foreign_term)), addr)
                     self.voted_for = addr
                     # resets its election timeout.
                     self.scheduleElectionTimeout()
+                
             elif data.decode("utf-8").startswith(RESPONSE_VOTE_MESSAGE_PREFIX) and self.state == SERVER_STATE.CANDIDATE:
                 foreign_term = int(data.decode("utf-8").split(":")[1])
                 logging.debug("Get vote response: %s", foreign_term)
@@ -234,25 +304,57 @@ class Server:
             elif data.decode("utf-8").startswith(HEARTBEAT_MESSAGE):
                 if addr == self.server_address: 
                     return
-                foreign_term = int(data.decode("utf-8").split(':')[1])
-                if self.term > foreign_term:
-                    return
-                self.term = foreign_term 
                 # Deserialize and update latest group view from leader.
-                self.group_view = ast.literal_eval(data.decode("utf-8").split(':')[3])
+                response = {'result':True}
+                request = json.loads(data.decode("utf-8")[len(HEARTBEAT_MESSAGE):])
+                logging.debug("Follower appendEntries request %s",request)
+                self.group_view = ast.literal_eval(request['group_view'])
                 if self.heartbeat_timer is not None:
                     self.heartbeat_timer.cancel()
                 self.state = SERVER_STATE.FOLLOWER
                 self.current_leader_addr = addr
-                logging.info('Server at %s is a follower',self.server_address)
+                if self.term > request['term']:
+                    # Reply false if foreign term < currentTerm
+                    response['result'] = False
+                elif len(self.log)<=request['prevLogIndex']:
+                    # Reply false if log doesn’t contain an entry at prevLogIndex
+                    # whose term matches prevLogTerm
+                    response['result'] = False
+                elif self.log[request['prevLogIndex']][0] != request['prevLogTerm']:
+                    # If an existing entry conflicts with a new one (same index 
+                    # but different terms), delete the existing entry and all that
+                    # follow it
+                    self.log = self.log[0:request['prevLogIndex']]
+                    response['result'] = False
+                else:
+                    if len(request['entries']) > 0:
+                        self.log = self.log[0:request['prevLogIndex']+1]
+                        # Append any new entries not already in the log
+                        self.log += request['entries']
+                # If leaderCommit > commitIndex, set commitIndex =
+                # min(leaderCommit, index of last new entry)
+                if self.commit_index < request['leaderCommit']:
+                    self.commit_index = max(request['leaderCommit'],len(self.log)-1)
+                # If commitIndex > lastApplied: increment lastApplied, apply
+                # log[lastApplied] to state machine
+                if self.last_applied < self.commit_index:
+                    self.last_applied = self.commit_index
+                logging.info('Server at %s is a follower with log entries: %s',self.server_address, self.log)
+                self.term = request['term']
+                response['term'] = self.term
                 self.has_voted = False
                 # Reset election timer.
                 self.scheduleElectionTimeout()
-                # send heartbeat Ack
-                self.send_socket.sendto(str.encode(HEARTBEAT_ACK_MESSAGE),addr)
+                self.send_socket.sendto(str.encode(HEARTBEAT_ACK_MESSAGE + json.dumps(response)), addr)
             # Deal with heartbeat_Ack.
             elif data.decode("utf-8").startswith(HEARTBEAT_ACK_MESSAGE) and self.state == SERVER_STATE.LEADER:
-                logging.info("Leader %s received ack from %s.", self.server_address, addr)
+                request = json.loads(data.decode("utf-8")[len(HEARTBEAT_ACK_MESSAGE):])
+                # logging.info("Leader %s received ack from %s.", self.server_address, addr)
+                if request['term'] == self.term and request['result']:
+                    self.match_index[addr] = len(self.log)
+                    self.next_index[addr] = len(self.log)
+                else:
+                    self.next_index[addr] -= 1
                 self.group_view_ack.add(addr) 
 
 
