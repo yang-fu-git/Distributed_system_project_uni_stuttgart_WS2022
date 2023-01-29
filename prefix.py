@@ -1,0 +1,14 @@
+BUFFER_SIZE = 1024
+BROADCAST_IP = "192.168.178.255"
+BROADCAST_PORT = 10001
+BROADCAST_MESSAGE = 'I\'m a new participant.'   # new server
+BROADCAST_MESSAGE_CLIENT = 'I\'m a new client.'
+REQUEST_VOTE_MESSAGE_PREFIX = 'Please vote me:'
+RESPONSE_VOTE_MESSAGE_PREFIX = 'Vote response:'
+HEARTBEAT_MESSAGE = 'I\'m the leader at term:'
+HEARTBEAT_ACK_MESSAGE = 'I\'m still online'
+CLIENT_REQUEST = "Client request:"
+CLIENT_RESPONSE = "Client response:"
+UNACK_THREASHOLD  = 5
+GROUP_MESSAGE = 'Group message:'
+GROUP_MESSAGE_ACK = 'Group message recieved!'

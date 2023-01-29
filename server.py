@@ -3,7 +3,6 @@ import sys
 import enum
 import logging
 import random
-import time
 import time, threading
 from queue import Queue
 from datetime import datetime
@@ -11,6 +10,7 @@ import json
 import ast
 import collections
 from threading import Lock
+from prefix import *
 
 # 3 servers come online at the same time and start voting process asap
 def broadcast(ip, port,broadcast_message,broadcast_socket):
@@ -27,19 +27,7 @@ def ELECTION_TIMEOUT():
 def HEARTBEAT_TIMEOUT():
     return 100* 1e-2
 
-# TODO: heartbeet ack should have a timeout, in order to kick unhealthy server out.
-
-BUFFER_SIZE = 1024
-BROADCAST_IP = "192.168.178.255"
-BROADCAST_PORT = 10001
-BROADCAST_MESSAGE = 'I\'m a new participant.'
-REQUEST_VOTE_MESSAGE_PREFIX = 'Please vote me:'
-RESPONSE_VOTE_MESSAGE_PREFIX = 'Vote response:'
-HEARTBEAT_MESSAGE = 'I\'m the leader at term:'
-HEARTBEAT_ACK_MESSAGE = 'I\'m still online'
-CLIENT_REQUEST = "Client request:"
-CLIENT_RESPONSE = "Client response:"
-UNACK_THREASHOLD  = 5
+# TODO: heartbeat ack should have a timeout, in order to kick unhealthy server out.
 
 class SERVER_STATE(enum.Enum):
     FOLLOWER = 1
@@ -60,6 +48,11 @@ class Server:
         # List of all distinct online servers. Key of online server is server_address.
         self.group_view = set()
         self.group_view_ack = set()
+
+        self.client_view = set()
+        self.client_view_ack = set()
+        self.client_view_unhealthy = collections.Counter()
+
         # Number of unacks of unhealthy online servers, only valid for leader.
         # Servers that did not acknowledge are considered as unhealthy and its correspinding number will be incremented.
         # Unhealthy servers with unacked number >= UNACK_THREASHOLD will be removed.
@@ -165,6 +158,23 @@ class Server:
         self.heartbeat_timer = threading.Timer(HEARTBEAT_TIMEOUT(), self.scheduleHeartbeatTimeout)
         self.heartbeat_timer.start()
 
+    def pushMessagesToClients(self):
+        # Update list of clients if needed.
+        # Reset if server is healthy again.
+        for acked in self.client_view_ack:
+            del self.client_view_unhealthy[acked]
+        # Kick out unhealthy server.
+        for unacked in self.client_view.difference(self.client_view_ack):
+            self.client_view_unhealthy[unacked] += 1
+            if self.client_view_unhealthy[unacked] == UNACK_THREASHOLD:
+                self.client_view.remove(unacked)
+        self.client_view_ack.clear()
+        for addr in self.client_view:
+            push_messages_payload = {
+                'messages': [msg for (_, msg) in self.log[1:]],
+            }
+            message = GROUP_MESSAGE+'{}'.format(json.dumps(push_messages_payload))
+            self.send_socket.sendto(str.encode(message),addr)
 
     def requestVote(self):
         # If leader is unhealthy, we should at least remove leader from group view.
@@ -208,6 +218,7 @@ class Server:
                 break
         if self.last_applied < self.commit_index:
             self.last_applied = self.commit_index
+            self.pushMessagesToClients()
         
         for addr in self.group_view:
             if addr == self.server_address:
@@ -219,7 +230,8 @@ class Server:
                 'prevLogTerm':self.log[self.next_index[addr]-1][0],
                 'entries':[],
                 'leaderCommit':self.commit_index,
-                'group_view':repr(self.group_view)
+                'group_view':repr(self.group_view),
+                'client_view':repr(self.client_view) if len(self.client_view)>0 else "[]"
             }
             if self.next_index[addr] < len(self.log):
                 append_entries_payload['entries'] = self.log[self.next_index[addr]:]
@@ -274,9 +286,14 @@ class Server:
                     self.match_index[addr] = 0
                     logging.info("Add server paticipent: %s", addr)
                     logging.info("Current group view: %s", self.group_view)
-            if data.decode("utf-8").startswith(CLIENT_REQUEST):
+            elif data.decode("utf-8").startswith(CLIENT_REQUEST):
                 if self.state == SERVER_STATE.LEADER:
-                    self.log.append([self.term,data.decode("utf-8").split(":")[1]])
+                    self.log.append([self.term,"Client message " + str(addr) + ": " + data.decode("utf-8").split(":")[1]])
+            elif data.decode("utf-8").startswith(BROADCAST_MESSAGE_CLIENT):
+                if self.state == SERVER_STATE.LEADER:
+                    if addr not in self.client_view:
+                        self.client_view.add(addr)
+
   
     
     def listenAtSenderPort(self):
@@ -309,6 +326,8 @@ class Server:
                 request = json.loads(data.decode("utf-8")[len(HEARTBEAT_MESSAGE):])
                 logging.debug("Follower appendEntries request %s",request)
                 self.group_view = ast.literal_eval(request['group_view'])
+                if request['client_view'] != "[]":
+                    self.client_view = ast.literal_eval(request['client_view'])
                 if self.heartbeat_timer is not None:
                     self.heartbeat_timer.cancel()
                 self.state = SERVER_STATE.FOLLOWER
@@ -355,7 +374,11 @@ class Server:
                     self.next_index[addr] = len(self.log)
                 else:
                     self.next_index[addr] -= 1
-                self.group_view_ack.add(addr) 
+                self.group_view_ack.add(addr)
+            elif data.decode("utf-8").startswith(GROUP_MESSAGE_ACK) and self.state == SERVER_STATE.LEADER:
+                request = json.loads(data.decode("utf-8")[len(GROUP_MESSAGE_ACK):])
+                self.client_view_ack.add(addr)
+
 
 
 if __name__ == "__main__":
