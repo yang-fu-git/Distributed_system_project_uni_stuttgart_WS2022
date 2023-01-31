@@ -11,6 +11,7 @@ import ast
 import collections
 from threading import Lock
 from prefix import *
+import os
 
 # 3 servers come online at the same time and start voting process asap
 def broadcast(ip, port,broadcast_message,broadcast_socket):
@@ -106,7 +107,6 @@ class Server:
         self.listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # self.listen_socket.setblocking(0)
         # Trick: '' in fact bind to real server local ip.
         self.listen_socket.bind(('', BROADCAST_PORT))
         self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -117,7 +117,7 @@ class Server:
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
+        handler.setFormatter(formatter) 
         self.logger.addHandler(handler)
         # Handle for election timer.
         self.election_timer = None
@@ -204,7 +204,7 @@ class Server:
     # 1. Tell others I'm leader at .. term with groupview
     # 2. Send log replication to others
     def appendEntries(self):
-        logging.info("Leader log entries: %s", self.log)
+        logging.info("Leader with PID %s log entries: %s", os.getpid(), self.log)
         # with self.mutex:
         # If there exists an N such that N > commitIndex, a majority
         # of matchIndex[i] ≥ N, and log[N].term == currentTerm:
@@ -358,7 +358,7 @@ class Server:
                 # log[lastApplied] to state machine
                 if self.last_applied < self.commit_index:
                     self.last_applied = self.commit_index
-                logging.info('Server at %s is a follower with log entries: %s',self.server_address, self.log)
+                logging.info('Server at %s is a follower with PID %s with log entries: %s',self.server_address, os.getpid() , self.log)
                 self.term = request['term']
                 response['term'] = self.term
                 self.has_voted = False
