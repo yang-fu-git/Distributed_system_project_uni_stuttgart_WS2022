@@ -36,7 +36,7 @@ class Client:
                 # Deserialize and update latest group view from leader.
                 response = {'result':True}
                 request = json.loads(data.decode("utf-8")[len(GROUP_MESSAGE):])
-                self.log = list(request['messages'])
+                self.log = list(json.loads(request['messages']))
                 self.send_socket.sendto(str.encode(GROUP_MESSAGE_ACK + json.dumps(response)), addr)
                 self.printLatestMessages()
 

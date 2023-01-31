@@ -171,7 +171,7 @@ class Server:
         self.client_view_ack.clear()
         for addr in self.client_view:
             push_messages_payload = {
-                'messages': [msg for (_, msg) in self.log[1:]],
+                'messages': json.dumps([msg for (_, msg) in self.log[1:]]),
             }
             message = GROUP_MESSAGE+'{}'.format(json.dumps(push_messages_payload))
             self.send_socket.sendto(str.encode(message),addr)
@@ -238,18 +238,6 @@ class Server:
             message = HEARTBEAT_MESSAGE+'{}'.format(json.dumps(append_entries_payload))
             self.send_socket.sendto(str.encode(message),addr)
         
-
-    # def listenForheartAckknowledge(listen_socket):
-    #     activeServer=[]
-    #     while datetime.now().strftime("%H:%M:%S")-sendHeartBeatTime.get().total_seconds()*1000<1:
-    #         data, addr = listen_socket.recvfrom(1024) #non blocking
-    #         if data:
-    #             if data == 'I\'m the new follower':
-    #                 print(f"follower: %s" % (addr,))
-    #                 activeServer.append(addr[1])
-    #             elif data == 'plz vote me':
-    #                 broadcast_socket.sendto(str.encode(message), (local_IP, (addr,)[1]))
-    #     onlineServers = activeServer
 
     def leaderElected(self):
         if self.num_votes >= (len(self.group_view)//2 +1):
